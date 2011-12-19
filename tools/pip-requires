@@ -31,7 +31,7 @@ pycrypto
 # commit hash so we can code to a constant version of keystone.
 # Trying to hit a moving target causes our local unittests to fail 
 # when they should remain unaffected.
--e git://github.com/citrix-openstack/keystone.git@everett#egg=keystone
+-e http://github.com/citrix-openstack/keystone.git@everett#egg=keystone
 
 # Note you will need gcc buildtools installed and must
 # have installed libxml headers for lxml to be successfully
