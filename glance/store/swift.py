@@ -216,9 +216,13 @@ class Store(glance.store.base.Store):
         self.key = self._option_get('swift_store_key')
         self.container = self.conf.swift_store_container
         try:
-            self.large_object_size = self.conf.swift_store_large_object_size
+            # The config files have swift_store_large_object_*size in MB, but
+            # internally we store them in bytes, since the image_size
+            # parameter passed to add() is also in bytes.
+            self.large_object_size = \
+                self.conf.swift_store_large_object_size << 20
             self.large_object_chunk_size = \
-                self.conf.swift_store_large_object_chunk_size
+                self.conf.swift_store_large_object_chunk_size << 20
             self.swift_store_object_buffer_dir = \
                 self.conf.swift_store_object_buffer_dir
         except cfg.ConfigFileValueError, e:
@@ -371,17 +375,24 @@ class Store(glance.store.base.Store):
                 combined_chunks_size = 0
                 while True:
                     with tempfile.NamedTemporaryFile(dir=tmp) as disk_buffer:
-                        chunk = image_file.read(self.large_object_chunk_size)
-                        if not chunk:
+                        chunk_size = 0
+                        while True:
+                            read_size = \
+                                min(self.CHUNKSIZE,
+                                    self.large_object_chunk_size - chunk_size)
+                            chunk = image_file.read(read_size)
+                            if not chunk:
+                                break
+                            chunk_size += len(chunk)
+                            checksum.update(chunk)
+                            disk_buffer.write(chunk)
+                        if chunk_size == 0:
                             break
-                        chunk_size = len(chunk)
-                        logger.debug(_("Writing %(chunk_size)d bytes for "
+                        logger.debug(_("Written %(chunk_size)d bytes for "
                                        "chunk %(chunk_id)d/"
                                        "%(total_chunks)s to disk buffer "
                                        "for image %(image_id)s")
                                      % locals())
-                        checksum.update(chunk)
-                        disk_buffer.write(chunk)
                         disk_buffer.flush()
                         logger.debug(_("Writing chunk %(chunk_id)d/"
                                        "%(total_chunks)s to Swift "
