@@ -24,7 +24,8 @@ import json
 import logging
 import traceback
 
-from webob.exc import (HTTPNotFound,
+from webob.exc import (HTTPError,
+                       HTTPNotFound,
                        HTTPConflict,
                        HTTPBadRequest,
                        HTTPForbidden,
@@ -56,6 +57,13 @@ from glance import registry
 logger = logging.getLogger(__name__)
 SUPPORTED_PARAMS = glance.api.v1.SUPPORTED_PARAMS
 SUPPORTED_FILTERS = glance.api.v1.SUPPORTED_FILTERS
+
+
+# 1 PiB, which is a *huge* image by anyone's measure.  This is just to protect
+# against client programming errors (or DoS attacks) in the image metadata.
+# We have a known limit of 1 << 63 in the database -- images.size is declared
+# as a BigInteger.
+IMAGE_SIZE_CAP = 1 << 50
 
 
 class Controller(controller.BaseController):
@@ -253,6 +261,12 @@ class Controller(controller.BaseController):
         # value during upload
         image_meta['size'] = image_meta.get('size', 0)
 
+        if image_meta['size'] > IMAGE_SIZE_CAP:
+            msg = (_('Denying attempt to upload image larger than %s') %
+                   IMAGE_SIZE_CAP)
+            logger.warn(msg)
+            raise HTTPBadRequest(msg, request=req)
+
         try:
             image_meta = registry.add_image_metadata(req.context, image_meta)
             return image_meta
@@ -313,6 +327,13 @@ class Controller(controller.BaseController):
                 logger.debug(_("Got request with no content-length and no "
                                "x-image-meta-size header"))
                 image_size = 0
+
+            if image_size > IMAGE_SIZE_CAP:
+                msg = (_('Denying attempt to upload image larger than %s') %
+                       IMAGE_SIZE_CAP)
+                logger.warn(msg)
+                raise HTTPBadRequest(msg, request=req)
+
             location, size, checksum = store.add(image_meta['id'],
                                                  req.body_file,
                                                  image_size)
@@ -356,6 +377,11 @@ class Controller(controller.BaseController):
             self.notifier.error('image.upload', msg)
             raise HTTPForbidden(msg, request=req,
                                 content_type='text/plain')
+
+        except HTTPError, e:
+            self._safe_kill(req, image_id)
+            self.notifier.error('image.upload', e.explanation)
+            raise
 
         except Exception, e:
             tb_info = traceback.format_exc()
