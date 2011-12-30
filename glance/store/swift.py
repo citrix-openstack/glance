@@ -386,6 +386,8 @@ class Store(glance.store.base.Store):
                             chunk_size += len(chunk)
                             checksum.update(chunk)
                             disk_buffer.write(chunk)
+                        if chunk_size == 0:
+                            break
                         logger.debug(_("Written %(chunk_size)d bytes for "
                                        "chunk %(chunk_id)d/"
                                        "%(total_chunks)s to disk buffer "
