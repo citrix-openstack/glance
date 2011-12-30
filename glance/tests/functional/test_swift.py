@@ -168,6 +168,7 @@ class TestSwift(test_api.TestApi):
         self.cleanup()
 
         self.swift_store_large_object_size = 2  # In MB
+        self.swift_store_large_object_chunk_size = 1  # In MB
         self.start_servers(**self.__dict__.copy())
 
         api_port = self.api_port
@@ -317,6 +318,7 @@ class TestSwift(test_api.TestApi):
         self.cleanup()
 
         self.swift_store_large_object_size = 3  # In MB
+        self.swift_store_large_object_chunk_size = 2  # In MB
         self.start_servers(**self.__dict__.copy())
 
         api_port = self.api_port

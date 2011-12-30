@@ -39,6 +39,7 @@ except ImportError:
 
 DEFAULT_CONTAINER = 'glance'
 DEFAULT_LARGE_OBJECT_SIZE = 5 * 1024  # 5GB
+DEFAULT_LARGE_OBJECT_CHUNK_SIZE = 200  # 200M
 
 logger = logging.getLogger('glance.store.swift')
 
@@ -355,7 +356,7 @@ class Store(glance.store.base.Store):
                 if image_size > 0:
                     total_chunks = str(int(
                         math.ceil(float(image_size) /
-                                  float(self.large_object_size))))
+                                  float(self.large_object_chunk_size))))
                 else:
                     # image_size == 0 is when we don't know the size
                     # of the image. This can occur with older clients

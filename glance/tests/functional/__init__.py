@@ -168,6 +168,7 @@ class ApiServer(Server):
         self.swift_store_key = ""
         self.swift_store_container = ""
         self.swift_store_large_object_size = 5 * 1024
+        self.swift_store_large_object_chunk_size = 200
         self.rbd_store_ceph_conf = ""
         self.rbd_store_pool = ""
         self.rbd_store_user = ""
@@ -200,6 +201,7 @@ swift_store_user = %(swift_store_user)s
 swift_store_key = %(swift_store_key)s
 swift_store_container = %(swift_store_container)s
 swift_store_large_object_size = %(swift_store_large_object_size)s
+swift_store_large_object_chunk_size = %(swift_store_large_object_chunk_size)s
 rbd_store_chunk_size = %(rbd_store_chunk_size)s
 rbd_store_user = %(rbd_store_user)s
 rbd_store_pool = %(rbd_store_pool)s
