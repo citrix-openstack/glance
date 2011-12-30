@@ -193,6 +193,8 @@ class Store(glance.store.base.Store):
                    default=DEFAULT_CONTAINER),
         cfg.IntOpt('swift_store_large_object_size',
                    default=DEFAULT_LARGE_OBJECT_SIZE),
+        cfg.IntOpt('swift_store_large_object_chunk_size',
+                   default=DEFAULT_LARGE_OBJECT_CHUNK_SIZE),
         cfg.BoolOpt('swift_store_create_container_on_put', default=False),
         ]
 
@@ -212,11 +214,13 @@ class Store(glance.store.base.Store):
         self.key = self._option_get('swift_store_key')
         self.container = self.conf.swift_store_container
         try:
-            # The config file has swift_store_large_object_size in MB, but
+            # The config file has swift_store_large_object_*size in MB, but
             # internally we store it in bytes, since the image_size parameter
             # passed to add() is also in bytes.
             self.large_object_size = \
                 self.conf.swift_store_large_object_size << 20
+            self.large_object_chunk_size = \
+                self.conf.swift_store_large_object_chunk_size << 20
         except cfg.ConfigFileValueError, e:
             reason = _("Error in configuration conf: %s") % e
             logger.error(reason)
@@ -363,7 +367,7 @@ class Store(glance.store.base.Store):
                 checksum = hashlib.md5()
                 combined_chunks_size = 0
                 while True:
-                    chunk_size = self.large_object_size
+                    chunk_size = self.large_object_chunk_size
                     if image_size == 0:
                         content_length = None
                     else:
