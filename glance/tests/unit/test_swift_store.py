@@ -408,15 +408,12 @@ class TestStore(unittest.TestCase):
 
         self.store = Store(test_utils.TestConfigOpts(conf))
         orig_max_size = self.store.large_object_size
-        orig_temp_size = self.store.large_object_chunk_size
         try:
             self.store.large_object_size = 1024
-            self.store.large_object_chunk_size = 1024
             location, size, checksum = self.store.add(expected_image_id,
                                                       image_swift,
                                                       expected_swift_size)
         finally:
-            self.store.large_object_chunk_size = orig_temp_size
             self.store.large_object_size = orig_max_size
 
         self.assertEquals(expected_location, location)
@@ -464,26 +461,25 @@ class TestStore(unittest.TestCase):
         # explicitly setting the image_length to 0
         self.store = Store(test_utils.TestConfigOpts(conf))
         orig_max_size = self.store.large_object_size
-        orig_temp_size = self.store.large_object_chunk_size
         global MAX_SWIFT_OBJECT_SIZE
         orig_max_swift_object_size = MAX_SWIFT_OBJECT_SIZE
         try:
             MAX_SWIFT_OBJECT_SIZE = 1024
             self.store.large_object_size = 1024
-            self.store.large_object_chunk_size = 1024
             location, size, checksum = self.store.add(expected_image_id,
                                                       image_swift, 0)
         finally:
-            self.store.large_object_chunk_size = orig_temp_size
             self.store.large_object_size = orig_max_size
             MAX_SWIFT_OBJECT_SIZE = orig_max_swift_object_size
 
         self.assertEquals(expected_location, location)
         self.assertEquals(expected_swift_size, size)
         self.assertEquals(expected_checksum, checksum)
-        # Expecting 6 objects to be created on Swift -- 5 chunks and 1
-        # manifest.
-        self.assertEquals(SWIFT_PUT_OBJECT_CALLS, 6)
+        # Expecting 7 calls to put_object -- 5 chunks, a zero chunk which is
+        # then deleted, and the manifest.  Note the difference with above
+        # where the image_size is specified in advance (there's no zero chunk
+        # in that case).
+        self.assertEquals(SWIFT_PUT_OBJECT_CALLS, 7)
 
         loc = get_location_from_uri(expected_location)
         (new_image_swift, new_image_size) = self.store.get(loc)
