@@ -18,13 +18,13 @@
 import datetime
 import hashlib
 import httplib
-import os
 import json
 import unittest
 
 import stubout
 import webob
 
+from glance.api.v1 import images
 from glance.api.v1 import router
 from glance.common import context
 from glance.common import utils
@@ -32,23 +32,14 @@ from glance.registry import context as rcontext
 from glance.registry.api import v1 as rserver
 from glance.registry.db import api as db_api
 from glance.registry.db import models as db_models
-from glance.tests import stubs
 from glance.tests import utils as test_utils
+from glance.tests.unit import base
 
 
 _gen_uuid = utils.generate_uuid
 
 UUID1 = _gen_uuid()
 UUID2 = _gen_uuid()
-
-
-CONF = {'sql_connection': 'sqlite://',
-        'verbose': False,
-        'debug': False,
-        'registry_host': '0.0.0.0',
-        'registry_port': '9191',
-        'default_store': 'file',
-        'filesystem_store_datadir': stubs.FAKE_FILESYSTEM_ROOTDIR}
 
 
 class TestRegistryDb(unittest.TestCase):
@@ -96,16 +87,14 @@ class TestRegistryDb(unittest.TestCase):
         self.stubs.UnsetAll()
 
 
-class TestRegistryAPI(unittest.TestCase):
+class TestRegistryAPI(base.IsolatedUnitTest):
     def setUp(self):
         """Establish a clean test environment"""
-        self.stubs = stubout.StubOutForTesting()
-        stubs.stub_out_registry_and_store_server(self.stubs)
-        stubs.stub_out_filesystem_backend()
-        conf = test_utils.TestConfigOpts(CONF)
+        super(TestRegistryAPI, self).setUp()
         context_class = 'glance.registry.context.RequestContext'
-        self.api = context.ContextMiddleware(rserver.API(conf),
-                                             conf, context_class=context_class)
+        self.api = context.ContextMiddleware(rserver.API(self.conf),
+                                             self.conf,
+                                             context_class=context_class)
         self.FIXTURES = [
             {'id': UUID1,
              'name': 'fake image #1',
@@ -121,7 +110,7 @@ class TestRegistryAPI(unittest.TestCase):
              'min_disk': 0,
              'min_ram': 0,
              'size': 13,
-             'location': "swift://user:passwd@acct/container/obj.tar.0",
+             'location': "file:///%s/%s" % (self.test_dir, UUID1),
              'properties': {'type': 'kernel'}},
             {'id': UUID2,
              'name': 'fake image #2',
@@ -137,22 +126,25 @@ class TestRegistryAPI(unittest.TestCase):
              'min_disk': 5,
              'min_ram': 256,
              'size': 19,
-             'location': "file:///tmp/glance-tests/2",
+             'location': "file:///%s/%s" % (self.test_dir, UUID2),
              'properties': {}}]
         self.context = rcontext.RequestContext(is_admin=True)
-        db_api.configure_db(conf)
+        db_api.configure_db(self.conf)
         self.destroy_fixtures()
         self.create_fixtures()
 
     def tearDown(self):
         """Clear the test environment"""
-        stubs.clean_out_fake_filesystem_backend()
-        self.stubs.UnsetAll()
+        super(TestRegistryAPI, self).tearDown()
         self.destroy_fixtures()
 
     def create_fixtures(self):
         for fixture in self.FIXTURES:
             db_api.image_create(self.context, fixture)
+            # We write a fake image file to the filesystem
+            with open("%s/%s" % (self.test_dir, fixture['id']), 'wb') as image:
+                image.write("chunk00000remainder")
+                image.flush()
 
     def destroy_fixtures(self):
         # Easiest to just drop the models and re-create them...
@@ -1931,16 +1923,11 @@ class TestRegistryAPI(unittest.TestCase):
         self.assertEquals(res.status_int, webob.exc.HTTPUnauthorized.code)
 
 
-class TestGlanceAPI(unittest.TestCase):
+class TestGlanceAPI(base.IsolatedUnitTest):
     def setUp(self):
         """Establish a clean test environment"""
-
-        self.stubs = stubout.StubOutForTesting()
-        stubs.stub_out_registry_and_store_server(self.stubs)
-        stubs.stub_out_filesystem_backend()
-        sql_connection = os.environ.get('GLANCE_SQL_CONNECTION', "sqlite://")
-        conf = test_utils.TestConfigOpts(CONF)
-        self.api = context.ContextMiddleware(router.API(conf), conf)
+        super(TestGlanceAPI, self).setUp()
+        self.api = context.ContextMiddleware(router.API(self.conf), self.conf)
         self.FIXTURES = [
             {'id': UUID1,
              'name': 'fake image #1',
@@ -1954,7 +1941,7 @@ class TestGlanceAPI(unittest.TestCase):
              'deleted': False,
              'checksum': None,
              'size': 13,
-             'location': "swift://user:passwd@acct/container/obj.tar.0",
+             'location': "file:///%s/%s" % (self.test_dir, UUID1),
              'properties': {'type': 'kernel'}},
             {'id': UUID2,
              'name': 'fake image #2',
@@ -1968,22 +1955,25 @@ class TestGlanceAPI(unittest.TestCase):
              'deleted': False,
              'checksum': None,
              'size': 19,
-             'location': "file:///tmp/glance-tests/2",
+             'location': "file:///%s/%s" % (self.test_dir, UUID2),
              'properties': {}}]
         self.context = rcontext.RequestContext(is_admin=True)
-        db_api.configure_db(conf)
+        db_api.configure_db(self.conf)
         self.destroy_fixtures()
         self.create_fixtures()
 
     def tearDown(self):
         """Clear the test environment"""
-        stubs.clean_out_fake_filesystem_backend()
-        self.stubs.UnsetAll()
+        super(TestGlanceAPI, self).tearDown()
         self.destroy_fixtures()
 
     def create_fixtures(self):
         for fixture in self.FIXTURES:
             db_api.image_create(self.context, fixture)
+            # We write a fake image file to the filesystem
+            with open("%s/%s" % (self.test_dir, fixture['id']), 'wb') as image:
+                image.write("chunk00000remainder")
+                image.flush()
 
     def destroy_fixtures(self):
         # Easiest to just drop the models and re-create them...
@@ -2688,3 +2678,141 @@ class TestGlanceAPI(unittest.TestCase):
 
         res = req.get_response(self.api)
         self.assertEquals(res.status_int, webob.exc.HTTPUnauthorized.code)
+
+
+class TestImageSerializer(base.IsolatedUnitTest):
+    def setUp(self):
+        """Establish a clean test environment"""
+        super(TestImageSerializer, self).setUp()
+        self.receiving_user = 'fake_user'
+        self.receiving_tenant = 2
+        self.context = rcontext.RequestContext(is_admin=True,
+                                               user=self.receiving_user,
+                                               tenant=self.receiving_tenant)
+        self.serializer = images.ImageSerializer(self.conf)
+
+        def image_iter():
+            for x in ['chunk', '678911234', '56789']:
+                yield x
+
+        self.FIXTURE = {
+             'image_iterator': image_iter(),
+             'image_meta': {
+                 'id': UUID2,
+                 'name': 'fake image #2',
+                 'status': 'active',
+                 'disk_format': 'vhd',
+                 'container_format': 'ovf',
+                 'is_public': True,
+                 'created_at': datetime.datetime.utcnow(),
+                 'updated_at': datetime.datetime.utcnow(),
+                 'deleted_at': None,
+                 'deleted': False,
+                 'checksum': None,
+                 'size': 19,
+                 'owner': _gen_uuid(),
+                 'location': "file:///tmp/glance-tests/2",
+                 'properties': {}}
+             }
+
+    def test_meta(self):
+        exp_headers = {'x-image-meta-id': UUID2,
+                       'x-image-meta-location': 'file:///tmp/glance-tests/2',
+                       'ETag': self.FIXTURE['image_meta']['checksum'],
+                       'x-image-meta-name': 'fake image #2'}
+        req = webob.Request.blank("/images/%s" % UUID2)
+        req.method = 'HEAD'
+        req.remote_addr = "1.2.3.4"
+        req.context = self.context
+        response = webob.Response(request=req)
+        self.serializer.meta(response, self.FIXTURE)
+        for key, value in exp_headers.iteritems():
+            self.assertEquals(value, response.headers[key])
+
+    def test_show(self):
+        exp_headers = {'x-image-meta-id': UUID2,
+                       'x-image-meta-location': 'file:///tmp/glance-tests/2',
+                       'ETag': self.FIXTURE['image_meta']['checksum'],
+                       'x-image-meta-name': 'fake image #2'}
+        req = webob.Request.blank("/images/%s" % UUID2)
+        req.method = 'GET'
+        req.context = self.context
+        response = webob.Response(request=req)
+
+        self.serializer.show(response, self.FIXTURE)
+        for key, value in exp_headers.iteritems():
+            self.assertEquals(value, response.headers[key])
+
+        self.assertEqual(response.body, 'chunk67891123456789')
+
+    def test_show_notify(self):
+        """Make sure an eventlet posthook for notify_image_sent is added."""
+        req = webob.Request.blank("/images/%s" % UUID2)
+        req.method = 'GET'
+        req.context = self.context
+        response = webob.Response(request=req)
+        response.environ['eventlet.posthooks'] = []
+
+        self.serializer.show(response, self.FIXTURE)
+
+        #just make sure the app_iter is called
+        for chunk in response.app_iter:
+            pass
+
+        self.assertNotEqual(response.environ['eventlet.posthooks'], [])
+
+    def test_image_send_notification(self):
+        req = webob.Request.blank("/images/%s" % UUID2)
+        req.method = 'GET'
+        req.remote_addr = '1.2.3.4'
+        req.context = self.context
+
+        image_meta = self.FIXTURE['image_meta']
+        called = {"notified": False}
+        expected_payload = {
+            'bytes_sent': 19,
+            'image_id': UUID2,
+            'owner_id': image_meta['owner'],
+            'receiver_tenant_id': self.receiving_tenant,
+            'receiver_user_id': self.receiving_user,
+            'destination_ip': '1.2.3.4',
+            }
+
+        def fake_info(_event_type, _payload):
+            self.assertEqual(_payload, expected_payload)
+            called['notified'] = True
+
+        self.stubs.Set(self.serializer.notifier, 'info', fake_info)
+
+        self.serializer.image_send_notification(19, 19, image_meta, req)
+
+        self.assertTrue(called['notified'])
+
+    def test_image_send_notification_error(self):
+        """Ensure image.send notification is sent on error."""
+        req = webob.Request.blank("/images/%s" % UUID2)
+        req.method = 'GET'
+        req.remote_addr = '1.2.3.4'
+        req.context = self.context
+
+        image_meta = self.FIXTURE['image_meta']
+        called = {"notified": False}
+        expected_payload = {
+            'bytes_sent': 17,
+            'image_id': UUID2,
+            'owner_id': image_meta['owner'],
+            'receiver_tenant_id': self.receiving_tenant,
+            'receiver_user_id': self.receiving_user,
+            'destination_ip': '1.2.3.4',
+            }
+
+        def fake_error(_event_type, _payload):
+            self.assertEqual(_payload, expected_payload)
+            called['notified'] = True
+
+        self.stubs.Set(self.serializer.notifier, 'error', fake_error)
+
+        #expected and actually sent bytes differ
+        self.serializer.image_send_notification(17, 19, image_meta, req)
+
+        self.assertTrue(called['notified'])

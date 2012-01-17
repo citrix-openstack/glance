@@ -40,6 +40,7 @@ except ImportError:
 DEFAULT_CONTAINER = 'glance'
 DEFAULT_LARGE_OBJECT_SIZE = 5 * 1024  # 5GB
 DEFAULT_LARGE_OBJECT_CHUNK_SIZE = 200  # 200M
+ONE_MB = 1000 * 1024
 
 logger = logging.getLogger('glance.store.swift')
 
@@ -101,12 +102,14 @@ class StoreLocation(glance.store.location.StoreLocation):
         # swift://user:pass@http://authurl.com/v1/container/obj
         # are immediately rejected.
         if uri.count('://') != 1:
-            reason = _("URI Cannot contain more than one occurrence of a "
-                      "scheme. If you have specified a "
-                      "URI like swift://user:pass@http://authurl.com/v1/"
-                      "container/obj, you need to change it to use the "
-                      "swift+http:// scheme, like so: "
-                      "swift+http://user:pass@authurl.com/v1/container/obj")
+            reason = _(
+                    "URI cannot contain more than one occurrence of a scheme."
+                    "If you have specified a URI like "
+                    "swift://user:pass@http://authurl.com/v1/container/obj"
+                    ", you need to change it to use the swift+http:// scheme, "
+                    "like so: "
+                    "swift+http://user:pass@authurl.com/v1/container/obj"
+                    )
             raise exception.BadStoreUri(uri, reason)
 
         pieces = urlparse.urlparse(uri)
@@ -219,9 +222,9 @@ class Store(glance.store.base.Store):
             # internally we store it in bytes, since the image_size parameter
             # passed to add() is also in bytes.
             self.large_object_size = \
-                self.conf.swift_store_large_object_size << 20
+                self.conf.swift_store_large_object_size * ONE_MB
             self.large_object_chunk_size = \
-                self.conf.swift_store_large_object_chunk_size << 20
+                self.conf.swift_store_large_object_chunk_size * ONE_MB
         except cfg.ConfigFileValueError, e:
             reason = _("Error in configuration conf: %s") % e
             logger.error(reason)
@@ -384,22 +387,22 @@ class Store(glance.store.base.Store):
                     chunk_etag = swift_conn.put_object(
                         self.container, chunk_name, reader,
                         content_length=content_length)
-                    written = reader.count
+                    bytes_read = reader.bytes_read
                     logger.debug(_("Wrote chunk %(chunk_id)d/"
-                                   "%(total_chunks)s of length %(written)d "
+                                   "%(total_chunks)s of length %(bytes_read)d "
                                    "to Swift returning MD5 of content: "
                                    "%(chunk_etag)s")
                                  % locals())
 
-                    if written == 0:
+                    if bytes_read == 0:
                         # Delete the last chunk, because it's of zero size.
                         # This will happen if image_size == 0.
-                        logger.debug(_("Deleting final zero chunk"))
+                        logger.debug(_("Deleting final zero-length chunk"))
                         swift_conn.delete_object(self.container, chunk_name)
                         break
 
                     chunk_id += 1
-                    combined_chunks_size += written
+                    combined_chunks_size += bytes_read
 
                 # In the case we have been given an unknown image size,
                 # set the image_size to the total size of the combined chunks.
@@ -491,19 +494,15 @@ class ChunkReader(object):
         self.fd = fd
         self.checksum = checksum
         self.total = total
-        self.count = 0
-        self.last_log = 0
+        self.bytes_read = 0
 
     def read(self, i):
-        left = self.total - self.count
+        left = self.total - self.bytes_read
         if i > left:
             i = left
         result = self.fd.read(i)
-        self.count += len(result)
+        self.bytes_read += len(result)
         self.checksum.update(result)
-        if self.count > self.last_log + (1 << 20):
-            logger.debug('Sent %d', self.count)
-            self.last_log = self.count
         return result
 
 

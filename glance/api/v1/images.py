@@ -37,7 +37,6 @@ from glance.api.v1 import controller
 from glance import image_cache
 from glance.common import cfg
 from glance.common import exception
-from glance.common import notifier
 from glance.common import wsgi
 from glance.common import utils
 import glance.store
@@ -52,6 +51,7 @@ from glance.store import (get_from_backend,
                           get_store_from_scheme,
                           UnsupportedBackend)
 from glance import registry
+from glance import notifier
 
 
 logger = logging.getLogger(__name__)
@@ -657,6 +657,10 @@ class ImageDeserializer(wsgi.JSONRequestDeserializer):
 class ImageSerializer(wsgi.JSONResponseSerializer):
     """Handles serialization of specific controller method responses."""
 
+    def __init__(self, conf):
+        self.conf = conf
+        self.notifier = notifier.Notifier(conf)
+
     def _inject_location_header(self, response, image_meta):
         location = self._get_image_location(image_meta)
         response.headers['Location'] = location
@@ -692,6 +696,28 @@ class ImageSerializer(wsgi.JSONResponseSerializer):
         self._inject_checksum_header(response, image_meta)
         return response
 
+    def image_send_notification(self, bytes_written, expected_size,
+                                image_meta, request):
+        """Send an image.send message to the notifier."""
+        try:
+            context = request.context
+            payload = {
+                'bytes_sent': bytes_written,
+                'image_id': image_meta['id'],
+                'owner_id': image_meta['owner'],
+                'receiver_tenant_id': context.tenant,
+                'receiver_user_id': context.user,
+                'destination_ip': request.remote_addr,
+            }
+            if bytes_written != expected_size:
+                self.notifier.error('image.send', payload)
+            else:
+                self.notifier.info('image.send', payload)
+        except Exception, err:
+            msg = _("An error occurred during image.send"
+                    " notification: %(err)s") % locals()
+            logger.error(msg)
+
     def show(self, response, result):
         image_meta = result['image_meta']
         image_id = image_meta['id']
@@ -704,6 +730,16 @@ class ImageSerializer(wsgi.JSONResponseSerializer):
         # size of the image file. See LP Bug #882585.
         def checked_iter(image_id, expected_size, image_iter):
             bytes_written = 0
+
+            def notify_image_sent_hook(env):
+                self.image_send_notification(bytes_written, expected_size,
+                                             image_meta, response.request)
+
+            # Add hook to process after response is fully sent
+            if 'eventlet.posthooks' in response.environ:
+                response.environ['eventlet.posthooks'].append(
+                    (notify_image_sent_hook, (), {}))
+
             try:
                 for chunk in image_iter:
                     yield chunk
@@ -757,5 +793,5 @@ class ImageSerializer(wsgi.JSONResponseSerializer):
 def create_resource(conf):
     """Images resource factory method"""
     deserializer = ImageDeserializer()
-    serializer = ImageSerializer()
+    serializer = ImageSerializer(conf)
     return wsgi.Resource(Controller(conf), deserializer, serializer)

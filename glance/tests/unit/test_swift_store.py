@@ -20,6 +20,7 @@
 import StringIO
 import hashlib
 import httplib
+import tempfile
 import unittest
 
 import stubout
@@ -551,3 +552,27 @@ class TestStore(unittest.TestCase):
         """
         loc = get_location_from_uri("swift://user:key@authurl/glance/noexist")
         self.assertRaises(exception.NotFound, self.store.delete, loc)
+
+
+class TestChunkReader(unittest.TestCase):
+
+    def test_read_all_data(self):
+        """
+        Replicate what goes on in the Swift driver with the
+        repeated creation of the ChunkReader object
+        """
+        CHUNKSIZE = 100
+        checksum = hashlib.md5()
+        data_file = tempfile.NamedTemporaryFile()
+        data_file.write('*' * 1024)
+        data_file.flush()
+        infile = open(data_file.name, 'rb')
+        bytes_read = 0
+        while True:
+            cr = glance.store.swift.ChunkReader(infile, checksum, CHUNKSIZE)
+            chunk = cr.read(CHUNKSIZE)
+            bytes_read += len(chunk)
+            if len(chunk) == 0:
+                break
+        self.assertEqual(1024, bytes_read)
+        data_file.close()
