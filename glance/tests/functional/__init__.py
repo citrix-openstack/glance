@@ -26,7 +26,6 @@ and spinning down the servers.
 import datetime
 import functools
 import os
-import random
 import shutil
 import signal
 import socket
@@ -83,8 +82,10 @@ class Server(object):
         self.bind_port = port
         self.conf_file_name = None
         self.conf_base = None
+        self.paste_conf_base = None
         self.server_control = './bin/glance-control'
         self.exec_env = None
+        self.deployment_flavor = ''
 
     def write_conf(self, **kwargs):
         """
@@ -101,16 +102,28 @@ class Server(object):
         if kwargs:
             conf_override.update(**kwargs)
 
-        # A config file to use just for this test...we don't want
+        # A config file and paste.ini to use just for this test...we don't want
         # to trample on currently-running Glance servers, now do we?
 
         conf_dir = os.path.join(self.test_dir, 'etc')
         conf_filepath = os.path.join(conf_dir, "%s.conf" % self.server_name)
+        paste_conf_filepath = conf_filepath.replace(".conf", "-paste.ini")
         utils.safe_mkdirs(conf_dir)
-        with open(conf_filepath, 'wb') as conf_file:
-            conf_file.write(self.conf_base % conf_override)
-            conf_file.flush()
-            self.conf_file_name = conf_file.name
+
+        def override_conf(filepath, base, override):
+            with open(filepath, 'wb') as conf_file:
+                conf_file.write(base % override)
+                conf_file.flush()
+                return conf_file.name
+
+        self.conf_file_name = override_conf(conf_filepath,
+                                            self.conf_base,
+                                            conf_override)
+
+        if self.paste_conf_base:
+            override_conf(paste_conf_filepath,
+                          self.paste_conf_base,
+                          conf_override)
 
         return self.conf_file_name
 
@@ -146,7 +159,8 @@ class ApiServer(Server):
     Server object that starts/stops/manages the API server
     """
 
-    def __init__(self, test_dir, port, registry_port, delayed_delete=False):
+    def __init__(self, test_dir, port, registry_port, policy_file,
+            delayed_delete=False):
         super(ApiServer, self).__init__(test_dir, port)
         self.server_name = 'api'
         self.default_store = 'file'
@@ -177,10 +191,12 @@ class ApiServer(Server):
         self.rbd_store_chunk_size = 4
         self.delayed_delete = delayed_delete
         self.owner_is_tenant = True
-        self.cache_pipeline = ""  # Set to cache for cache middleware
+        self.workers = 0
         self.image_cache_dir = os.path.join(self.test_dir,
                                             'cache')
         self.image_cache_driver = 'sqlite'
+        self.policy_file = policy_file
+        self.policy_default_rule = 'default'
         self.conf_base = """[DEFAULT]
 verbose = %(verbose)s
 debug = %(debug)s
@@ -210,13 +226,24 @@ rbd_store_pool = %(rbd_store_pool)s
 rbd_store_ceph_conf = %(rbd_store_ceph_conf)s
 delayed_delete = %(delayed_delete)s
 owner_is_tenant = %(owner_is_tenant)s
+workers = %(workers)s
 scrub_time = 5
 scrubber_datadir = %(scrubber_datadir)s
 image_cache_dir = %(image_cache_dir)s
 image_cache_driver = %(image_cache_driver)s
+policy_file = %(policy_file)s
+policy_default_rule = %(policy_default_rule)s
+[paste_deploy]
+flavor = %(deployment_flavor)s
+"""
+        self.paste_conf_base = """[pipeline:glance-api]
+pipeline = versionnegotiation context apiv1app
 
-[pipeline:glance-api]
-pipeline = versionnegotiation context %(cache_pipeline)s apiv1app
+[pipeline:glance-api-caching]
+pipeline = versionnegotiation context cache apiv1app
+
+[pipeline:glance-api-cachemanagement]
+pipeline = versionnegotiation context cache cache_manage apiv1app
 
 [app:apiv1app]
 paste.app_factory = glance.common.wsgi:app_factory
@@ -270,8 +297,10 @@ sql_idle_timeout = 3600
 api_limit_max = 1000
 limit_param_default = 25
 owner_is_tenant = %(owner_is_tenant)s
-
-[pipeline:glance-registry]
+[paste_deploy]
+flavor = %(deployment_flavor)s
+"""
+        self.paste_conf_base = """[pipeline:glance-registry]
 pipeline = context registryapp
 
 [app:registryapp]
@@ -310,8 +339,8 @@ wakeup_time = 2
 scrubber_datadir = %(scrubber_datadir)s
 registry_host = 0.0.0.0
 registry_port = %(registry_port)s
-
-[app:glance-scrubber]
+"""
+        self.paste_conf_base = """[app:glance-scrubber]
 paste.app_factory = glance.common.wsgi:app_factory
 glance.app_factory = glance.store.scrubber:Scrubber
 """
@@ -334,9 +363,13 @@ class FunctionalTest(unittest.TestCase):
         self.api_port = get_unused_port()
         self.registry_port = get_unused_port()
 
+        self.copy_data_file('policy.json', self.test_dir)
+        self.policy_file = os.path.join(self.test_dir, 'policy.json')
+
         self.api_server = ApiServer(self.test_dir,
                                     self.api_port,
-                                    self.registry_port)
+                                    self.registry_port,
+                                    self.policy_file)
         self.registry_server = RegistryServer(self.test_dir,
                                               self.registry_port)
 
@@ -521,3 +554,9 @@ class FunctionalTest(unittest.TestCase):
         engine = create_engine(self.registry_server.sql_connection,
                                pool_recycle=30)
         return engine.execute(sql)
+
+    def copy_data_file(self, file_name, dst_dir):
+        src_file_name = os.path.join('glance/tests/etc', file_name)
+        shutil.copy(src_file_name, dst_dir)
+        dst_file_name = os.path.join(dst_dir, file_name)
+        return dst_file_name

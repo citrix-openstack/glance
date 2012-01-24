@@ -2012,6 +2012,23 @@ class TestGlanceAPI(base.IsolatedUnitTest):
         self.assertEquals(res.status_int, webob.exc.HTTPBadRequest.code)
         self.assertTrue('Invalid container format' in res.body)
 
+    def test_bad_image_size(self):
+        fixture_headers = {'x-image-meta-store': 'bad',
+                   'x-image-meta-name': 'bogus',
+                   'x-image-meta-location': 'http://example.com/image.tar.gz',
+                   'x-image-meta-disk-format': 'vhd',
+                   'x-image-meta-size': 'invalid',
+                   'x-image-meta-container-format': 'bare'}
+
+        req = webob.Request.blank("/images")
+        req.method = 'POST'
+        for k, v in fixture_headers.iteritems():
+            req.headers[k] = v
+
+        res = req.get_response(self.api)
+        self.assertEquals(res.status_int, webob.exc.HTTPBadRequest.code)
+        self.assertTrue('Incoming image size' in res.body)
+
     def test_add_image_no_location_no_image_as_body(self):
         """Tests creates a queued image for no body and no loc header"""
         fixture_headers = {'x-image-meta-store': 'file',
@@ -2028,6 +2045,20 @@ class TestGlanceAPI(base.IsolatedUnitTest):
 
         res_body = json.loads(res.body)['image']
         self.assertEquals('queued', res_body['status'])
+        image_id = res_body['id']
+
+        # Test that we are able to edit the Location field
+        # per LP Bug #911599
+
+        req = webob.Request.blank("/images/%s" % image_id)
+        req.method = 'PUT'
+        req.headers['x-image-meta-location'] = 'http://example.com/images/123'
+        res = req.get_response(self.api)
+        self.assertEquals(res.status_int, httplib.OK)
+
+        res_body = json.loads(res.body)['image']
+        self.assertEquals('queued', res_body['status'])
+        self.assertFalse('location' in res_body)  # location never shown
 
     def test_add_image_no_location_no_content_type(self):
         """Tests creates a queued image for no body and no loc header"""
@@ -2043,6 +2074,22 @@ class TestGlanceAPI(base.IsolatedUnitTest):
             req.headers[k] = v
         res = req.get_response(self.api)
         self.assertEquals(res.status_int, 400)
+
+    def test_add_image_size_too_big(self):
+        """Tests raises BadRequest for supplied image size that is too big"""
+        IMAGE_SIZE_CAP = 1 << 50
+        fixture_headers = {'x-image-meta-size': IMAGE_SIZE_CAP + 1,
+                           'x-image-meta-name': 'fake image #3'}
+
+        req = webob.Request.blank("/images")
+        req.method = 'POST'
+        for k, v in fixture_headers.iteritems():
+            req.headers[k] = v
+
+        req.headers['Content-Type'] = 'application/octet-stream'
+        req.body = "chunk00000remainder"
+        res = req.get_response(self.api)
+        self.assertEquals(res.status_int, webob.exc.HTTPBadRequest.code)
 
     def test_add_image_bad_store(self):
         """Tests raises BadRequest for invalid store header"""
@@ -2085,6 +2132,35 @@ class TestGlanceAPI(base.IsolatedUnitTest):
         res_body = json.loads(res.body)['image']
         self.assertTrue('/images/%s' % res_body['id']
                         in res.headers['location'])
+        self.assertEquals('active', res_body['status'])
+        image_id = res_body['id']
+
+        # Test that we are NOT able to edit the Location field
+        # per LP Bug #911599
+
+        req = webob.Request.blank("/images/%s" % image_id)
+        req.method = 'PUT'
+        req.headers['x-image-meta-location'] = 'http://example.com/images/123'
+        res = req.get_response(self.api)
+        self.assertEquals(res.status_int, httplib.BAD_REQUEST)
+
+    def test_add_image_unauthorized(self):
+        rules = {"add_image": [["false:false"]]}
+        self.set_policy_rules(rules)
+        fixture_headers = {'x-image-meta-store': 'file',
+                           'x-image-meta-disk-format': 'vhd',
+                           'x-image-meta-container-format': 'ovf',
+                           'x-image-meta-name': 'fake image #3'}
+
+        req = webob.Request.blank("/images")
+        req.method = 'POST'
+        for k, v in fixture_headers.iteritems():
+            req.headers[k] = v
+
+        req.headers['Content-Type'] = 'application/octet-stream'
+        req.body = "chunk00000remainder"
+        res = req.get_response(self.api)
+        self.assertEquals(res.status_int, 401)
 
     def test_register_and_upload(self):
         """
@@ -2360,6 +2436,20 @@ class TestGlanceAPI(base.IsolatedUnitTest):
         res = req.get_response(self.api)
         self.assertEquals(res.status_int, 400)
 
+    def test_get_images_detailed_unauthorized(self):
+        rules = {"get_images": [["false:false"]]}
+        self.set_policy_rules(rules)
+        req = webob.Request.blank('/images/detail')
+        res = req.get_response(self.api)
+        self.assertEquals(res.status_int, 401)
+
+    def test_get_images_unauthorized(self):
+        rules = {"get_images": [["false:false"]]}
+        self.set_policy_rules(rules)
+        req = webob.Request.blank('/images/detail')
+        res = req.get_response(self.api)
+        self.assertEquals(res.status_int, 401)
+
     def test_store_location_not_revealed(self):
         """
         Test that the internal store location is NOT revealed
@@ -2514,6 +2604,14 @@ class TestGlanceAPI(base.IsolatedUnitTest):
         for key, value in expected_headers.iteritems():
             self.assertEquals(value, res.headers[key])
 
+    def test_image_meta_unauthorized(self):
+        rules = {"get_image": [["false:false"]]}
+        self.set_policy_rules(rules)
+        req = webob.Request.blank("/images/%s" % UUID2)
+        req.method = 'HEAD'
+        res = req.get_response(self.api)
+        self.assertEquals(res.status_int, 401)
+
     def test_show_image_basic(self):
         req = webob.Request.blank("/images/%s" % UUID2)
         res = req.get_response(self.api)
@@ -2525,6 +2623,13 @@ class TestGlanceAPI(base.IsolatedUnitTest):
         req = webob.Request.blank("/images/%s" % _gen_uuid())
         res = req.get_response(self.api)
         self.assertEquals(res.status_int, webob.exc.HTTPNotFound.code)
+
+    def test_show_image_unauthorized(self):
+        rules = {"get_image": [["false:false"]]}
+        self.set_policy_rules(rules)
+        req = webob.Request.blank("/images/%s" % UUID2)
+        res = req.get_response(self.api)
+        self.assertEqual(res.status_int, 401)
 
     def test_delete_image(self):
         req = webob.Request.blank("/images/%s" % UUID2)
@@ -2595,6 +2700,14 @@ class TestGlanceAPI(base.IsolatedUnitTest):
         req.method = 'DELETE'
         res = req.get_response(self.api)
         self.assertEquals(res.status_int, httplib.FORBIDDEN)
+
+    def test_delete_image_unauthorized(self):
+        rules = {"delete_image": [["false:false"]]}
+        self.set_policy_rules(rules)
+        req = webob.Request.blank("/images/%s" % UUID2)
+        req.method = 'DELETE'
+        res = req.get_response(self.api)
+        self.assertEquals(res.status_int, 401)
 
     def test_get_details_invalid_marker(self):
         """

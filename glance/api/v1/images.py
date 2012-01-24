@@ -20,7 +20,6 @@
 """
 
 import errno
-import json
 import logging
 import traceback
 
@@ -29,12 +28,11 @@ from webob.exc import (HTTPError,
                        HTTPConflict,
                        HTTPBadRequest,
                        HTTPForbidden,
-                       HTTPNoContent,
                        HTTPUnauthorized)
 
+from glance.api import policy
 import glance.api.v1
 from glance.api.v1 import controller
-from glance import image_cache
 from glance.common import cfg
 from glance.common import exception
 from glance.common import wsgi
@@ -46,10 +44,10 @@ import glance.store.rbd
 import glance.store.s3
 import glance.store.swift
 from glance.store import (get_from_backend,
+                          get_size_from_backend,
                           schedule_delete_from_backend,
                           get_store_from_location,
-                          get_store_from_scheme,
-                          UnsupportedBackend)
+                          get_store_from_scheme)
 from glance import registry
 from glance import notifier
 
@@ -93,6 +91,14 @@ class Controller(controller.BaseController):
         glance.store.create_stores(conf)
         self.notifier = notifier.Notifier(conf)
         registry.configure_registry_client(conf)
+        self.policy = policy.Enforcer(conf)
+
+    def _enforce(self, req, action):
+        """Authorize an action against our policies"""
+        try:
+            self.policy.enforce(req.context, action, {})
+        except exception.NotAuthorized:
+            raise HTTPUnauthorized()
 
     def index(self, req):
         """
@@ -117,6 +123,7 @@ class Controller(controller.BaseController):
                  'size': <SIZE>}, ...
             ]}
         """
+        self._enforce(req, 'get_images')
         params = self._get_query_params(req)
         try:
             images = registry.get_images_list(req.context, **params)
@@ -149,6 +156,7 @@ class Controller(controller.BaseController):
                  'properties': {'distro': 'Ubuntu 10.04 LTS', ...}}, ...
             ]}
         """
+        self._enforce(req, 'get_images')
         params = self._get_query_params(req)
         try:
             images = registry.get_images_detail(req.context, **params)
@@ -201,6 +209,7 @@ class Controller(controller.BaseController):
 
         :raises HTTPNotFound if image metadata is not available to user
         """
+        self._enforce(req, 'get_image')
         image_meta = self.get_image_meta_or_404(req, id)
         del image_meta['location']
         return {
@@ -217,6 +226,7 @@ class Controller(controller.BaseController):
 
         :raises HTTPNotFound if image is not available to user
         """
+        self._enforce(req, 'get_image')
         image_meta = self.get_active_image_meta_or_404(req, id)
 
         def get_from_store(image_meta):
@@ -254,12 +264,16 @@ class Controller(controller.BaseController):
             # don't actually care what it is at this point
             self.get_store_or_400(req, store)
 
-        image_meta['status'] = 'queued'
+            # retrieve the image size from remote store (if not provided)
+            image_meta['size'] = image_meta.get('size', 0) \
+                                 or get_size_from_backend(location)
+        else:
+            # Ensure that the size attribute is set to zero for uploadable
+            # images (if not provided). The size will be set to a non-zero
+            # value during upload
+            image_meta['size'] = image_meta.get('size', 0)
 
-        # Ensure that the size attribute is set to zero for all
-        # queued instances. The size will be set to a non-zero
-        # value during upload
-        image_meta['size'] = image_meta.get('size', 0)
+        image_meta['status'] = 'queued'
 
         if image_meta['size'] > IMAGE_SIZE_CAP:
             msg = (_('Denying attempt to upload image larger than %s') %
@@ -329,10 +343,12 @@ class Controller(controller.BaseController):
                 image_size = 0
 
             if image_size > IMAGE_SIZE_CAP:
-                msg = (_('Denying attempt to upload image larger than %s') %
-                       IMAGE_SIZE_CAP)
+                max_image_size = IMAGE_SIZE_CAP
+                msg = _("Denying attempt to upload image larger than "
+                        "%(max_image_size)d. Supplied image size was "
+                        "%(image_size)d") % locals()
                 logger.warn(msg)
-                raise HTTPBadRequest(msg, request=req)
+                raise HTTPBadRequest(msg, request=request)
 
             location, size, checksum = store.add(image_meta['id'],
                                                  req.body_file,
@@ -491,6 +507,7 @@ class Controller(controller.BaseController):
                 and the request body is not application/octet-stream
                 image data.
         """
+        self._enforce(req, 'add_image')
         if req.context.read_only:
             msg = _("Read-only access")
             logger.debug(msg)
@@ -522,6 +539,7 @@ class Controller(controller.BaseController):
 
         :retval Returns the updated image information as a mapping
         """
+        self._enforce(req, 'modify_image')
         if req.context.read_only:
             msg = _("Read-only access")
             logger.debug(msg)
@@ -545,6 +563,14 @@ class Controller(controller.BaseController):
 
         if image_data is not None and orig_status != 'queued':
             raise HTTPConflict(_("Cannot upload to an unqueued image"))
+
+        # Only allow the Location fields to be modified if the image is
+        # in queued status, which indicates that the user called POST /images
+        # but did not supply either a Location field OR image data
+        if not orig_status == 'queued' and 'location' in image_meta:
+            msg = _("Attempted to update Location field for an image "
+                    "not in queued status.")
+            raise HTTPBadRequest(msg, request=req, content_type="text/plain")
 
         try:
             image_meta = registry.update_image_metadata(req.context, id,
@@ -586,6 +612,7 @@ class Controller(controller.BaseController):
         :raises HttpNotAuthorized if image or any chunk is not
                 deleteable by the requesting user
         """
+        self._enforce(req, 'delete_image')
         if req.context.read_only:
             msg = _("Read-only access")
             logger.debug(msg)
@@ -642,7 +669,25 @@ class ImageDeserializer(wsgi.JSONRequestDeserializer):
 
     def _deserialize(self, request):
         result = {}
-        result['image_meta'] = utils.get_image_meta_from_headers(request)
+        try:
+            result['image_meta'] = utils.get_image_meta_from_headers(request)
+        except exception.Invalid:
+            image_size_str = request.headers['x-image-meta-size']
+            msg = _("Incoming image size of %s was not convertible to "
+                    "an integer.") % image_size_str
+            raise HTTPBadRequest(msg, request=request)
+
+        image_meta = result['image_meta']
+        if 'size' in image_meta:
+            incoming_image_size = image_meta['size']
+            if incoming_image_size > IMAGE_SIZE_CAP:
+                max_image_size = IMAGE_SIZE_CAP
+                msg = _("Denying attempt to upload image larger than "
+                        "%(max_image_size)d. Supplied image size was "
+                        "%(incoming_image_size)d") % locals()
+                logger.warn(msg)
+                raise HTTPBadRequest(msg, request=request)
+
         data = request.body_file if self.has_body(request) else None
         result['image_data'] = data
         return result

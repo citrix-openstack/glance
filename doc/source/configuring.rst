@@ -45,6 +45,16 @@ In addition to this documentation page, you can check the
 files distributed with Glance for example configuration files for each server
 application with detailed comments on what each options does.
 
+The PasteDeploy configuration (controlling the deployment of the WSGI
+application for each component) may be found by default in
+<component>-paste.ini alongside the main configuration file, <component>.conf.
+For example, ``glance-api-paste.ini`` corresponds to ``glance-api.conf``.
+This pathname for the paste config is configurable, as follows:
+
+  [paste_deploy]
+  config_file = /path/to/paste/config
+
+
 Common Configuration Options in Glance
 --------------------------------------
 
@@ -112,6 +122,17 @@ Optional. Default: ``9191`` for the registry server, ``9292`` for the API server
 Number of backlog requests to configure the socket with.
 
 Optional. Default: ``4096``
+
+* ``workers=PROCESSES``
+
+Number of Glance API worker processes to start. Each worker
+process will listen on the same port. Increasing this
+value may increase performance (especially if using SSL
+with compression enabled). Typically it is recommended
+to have one worker process per CPU. The value `0` will
+prevent any new processes from being created.
+
+Optional. Default: ``0``
 
 Configurating SSL Support
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -489,31 +510,35 @@ Glance API servers can be configured to have a local image cache. Caching of
 image files is transparent and happens using a piece of middleware that can
 optionally be placed in the server application pipeline.
 
+This pipeline is configured in the PasteDeploy configuration file,
+<component>-paste.ini. You should not generally have to edit this file
+directly, as it ships with ready-made pipelines for all common deployment
+flavors.
+
 Enabling the Image Cache Middleware
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-To enable the image cache middleware, you would insert the cache middleware
-into your application pipeline **after** the appropriate context middleware.
+To enable the image cache middleware, the cache middleware must occur in
+the application pipeline **after** the appropriate context middleware.
 
-The cache middleware should be in your ``glance-api.conf`` in a section titled
-``[filter:cache]``. It should look like this::
+The cache middleware should be in your ``glance-api-paste.ini`` in a section
+titled ``[filter:cache]``. It should look like this::
 
   [filter:cache]
   paste.filter_factory = glance.common.wsgi:filter_factory
   glance.filter_factory = glance.api.middleware.cache:CacheFilter
 
+A ready-made application pipeline including this filter is defined in
+the ``glance-api-paste.ini`` file, looking like so::
 
-For example, suppose your application pipeline in the ``glance-api.conf`` file
-looked like so::
-
-  [pipeline:glance-api]
-  pipeline = versionnegotiation context apiv1app
-
-In the above application pipeline, you would add the cache middleware after the
-context middleware, like so::
-
-  [pipeline:glance-api]
+  [pipeline:glance-api-caching]
   pipeline = versionnegotiation context cache apiv1app
+
+To enable the above application pipeline, in your main ``glance-api.conf``
+configuration file, select the appropriate deployment flavor like so::
+
+  [paste_deploy]
+  flavor = caching
 
 And that would give you a transparent image cache on the API server.
 

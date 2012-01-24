@@ -42,6 +42,20 @@ FIVE_KB = 5 * 1024
 
 
 class RemoteImageHandler(BaseHTTPServer.BaseHTTPRequestHandler):
+    def do_HEAD(s):
+        """
+        Respond to an image HEAD request fake metadata
+        """
+        if 'images' in s.path:
+            s.send_response(200)
+            s.send_header('Content-Type', 'application/octet-stream')
+            s.send_header('Content-Length', FIVE_KB)
+            s.end_headers()
+            return
+        else:
+            self.send_error(404, 'File Not Found: %s' % self.path)
+            return
+
     def do_GET(s):
         """
         Respond to an image GET request with fake image content.
@@ -160,7 +174,7 @@ class BaseCacheMiddlewareTest(object):
 
         thread.start_new_thread(serve_requests, (remote_server,))
 
-        # Add a remote image and verify a 200 OK is returned
+        # Add a remote image and verify a 201 Created is returned
         remote_uri = 'http://%s:%d/images/2' % (remote_ip, remote_port)
         headers = {'X-Image-Meta-Name': 'Image2',
                    'X-Image-Meta-Is-Public': 'True',
@@ -170,21 +184,19 @@ class BaseCacheMiddlewareTest(object):
         response, content = http.request(path, 'POST', headers=headers)
         self.assertEqual(response.status, 201)
         data = json.loads(content)
-        self.assertEqual(data['image']['size'], 0)
+        self.assertEqual(data['image']['size'], FIVE_KB)
 
         image_id = data['image']['id']
-
-        # Grab the image
         path = "http://%s:%d/v1/images/%s" % ("0.0.0.0", self.api_port,
                                               image_id)
+
+        # Grab the image
         http = httplib2.Http()
         response, content = http.request(path, 'GET')
         self.assertEqual(response.status, 200)
 
         # Grab the image again to ensure it can be served out from
         # cache with the correct size
-        path = "http://%s:%d/v1/images/%s" % ("0.0.0.0", self.api_port,
-                                              image_id)
         http = httplib2.Http()
         response, content = http.request(path, 'GET')
         self.assertEqual(response.status, 200)
@@ -422,8 +434,11 @@ registry_host = 0.0.0.0
 registry_port = %(registry_port)s
 metadata_encryption_key = %(metadata_encryption_key)s
 log_file = %(log_file)s
+""" % cache_file_options)
 
-[app:glance-pruner]
+        with open(cache_config_filepath.replace(".conf", "-paste.ini"),
+                  'w') as paste_file:
+            paste_file.write("""[app:glance-pruner]
 paste.app_factory = glance.common.wsgi:app_factory
 glance.app_factory = glance.image_cache.pruner:Pruner
 
@@ -438,8 +453,7 @@ glance.app_factory = glance.image_cache.cleaner:Cleaner
 [app:glance-queue-image]
 paste.app_factory = glance.common.wsgi:app_factory
 glance.app_factory = glance.image_cache.queue_image:Queuer
-""" % cache_file_options)
-            cache_file.flush()
+""")
 
         self.verify_no_images()
 
@@ -510,10 +524,11 @@ class TestImageCacheXattr(functional.FunctionalTest,
 
         self.inited = True
         self.disabled = False
-        self.cache_pipeline = "cache"
         self.image_cache_driver = "xattr"
 
         super(TestImageCacheXattr, self).setUp()
+
+        self.api_server.deployment_flavor = "caching"
 
         if not xattr_writes_supported(self.test_dir):
             self.inited = True
@@ -554,10 +569,11 @@ class TestImageCacheManageXattr(functional.FunctionalTest,
 
         self.inited = True
         self.disabled = False
-        self.cache_pipeline = "cache cache_manage"
         self.image_cache_driver = "xattr"
 
         super(TestImageCacheManageXattr, self).setUp()
+
+        self.api_server.deployment_flavor = "cachemanagement"
 
         if not xattr_writes_supported(self.test_dir):
             self.inited = True
@@ -598,9 +614,10 @@ class TestImageCacheSqlite(functional.FunctionalTest,
 
         self.inited = True
         self.disabled = False
-        self.cache_pipeline = "cache"
 
         super(TestImageCacheSqlite, self).setUp()
+
+        self.api_server.deployment_flavor = "caching"
 
     def tearDown(self):
         if os.path.exists(self.api_server.image_cache_dir):
@@ -635,10 +652,11 @@ class TestImageCacheManageSqlite(functional.FunctionalTest,
 
         self.inited = True
         self.disabled = False
-        self.cache_pipeline = "cache cache_manage"
         self.image_cache_driver = "sqlite"
 
         super(TestImageCacheManageSqlite, self).setUp()
+
+        self.api_server.deployment_flavor = "cachemanagement"
 
     def tearDown(self):
         if os.path.exists(self.api_server.image_cache_dir):
